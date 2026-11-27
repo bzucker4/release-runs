@@ -38,3 +38,9 @@ In one run, change two results and use **Link vault file** to add a screenshot t
 ## Support
 
 Built by Atlas Creative. [Sponsor bzucker4 on GitHub](https://github.com/sponsors/bzucker4).
+
+## Release and license
+
+Release Runs is licensed under the [MIT License](LICENSE).
+
+For a new release, update `manifest.json` and `versions.json` on the default branch and run **Publish Obsidian release** from the repository’s Actions tab. The workflow runs the tests and uses the manifest version as the GitHub release tag. It attaches `main.js`, `manifest.json`, and `styles.css` separately so Obsidian can install them.

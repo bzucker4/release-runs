@@ -1,7 +1,7 @@
 {
   "id": "release-runs",
   "name": "Release Runs",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "minAppVersion": "1.5.0",
   "description": "Turn Markdown checklists into test runs with evidence, status summaries, and comparisons.",
   "author": "Atlas Creative",
