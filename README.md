@@ -1,2 +1,38 @@
-# release-runs
-Turn Obsidian checklists into repeatable test runs with evidence and comparisons.
+# Release Runs
+
+Turn a Markdown checklist into a fresh test run, record results with evidence, and compare it with the previous run from the same checklist. Run records are readable Markdown notes in your vault.
+
+## Install manually
+
+1. Open the vault folder on your device.
+2. Copy the `release-runs` folder into `.obsidian/plugins/` inside the vault. Check that `.obsidian/plugins/release-runs/manifest.json`, `main.js`, and `styles.css` are present.
+3. Reload Obsidian and enable **Release Runs** under **Settings → Community plugins**. The manifest targets Obsidian 1.5.0 or later.
+
+## Run a checklist
+
+Create a Markdown note with a checklist, for example:
+
+```markdown
+- [ ] The setup instructions work from a clean install ^setup
+- [ ] A completed run remains readable in Reading view ^reading
+- [ ] Previous results open from the comparison view ^comparison
+```
+
+1. Open that note and choose **Release Runs: Start new run** from the command palette. You can also right-click the checklist note in the file explorer and choose **Start checklist run**.
+2. Enter a run name and optional version, deployment URL, or environment. **Create run** writes a dated note in the **Release Runs** folder and opens the result editor. All checks start **Untested**, including checks marked complete in the template.
+3. Set a result and click **Save result**. For evidence, enter a short observation, an external URL, or a link to a screenshot already in the vault, such as `[[Screenshots/Setup result.png]]`. You can reopen the result editor with **Release Runs: Record results**.
+4. Open a later run for the same checklist and select **Release Runs: Compare with previous run**. Use **Release Runs: Compare with previous run in the same environment** to find the last run with a matching environment label. The comparison shows changes in checklist items, status, and evidence. Open the previous note to inspect its saved results.
+
+The comparison matches unchanged checklist text. Add a unique Obsidian block ID such as `^setup` to an item to track it through wording changes. If you move or rename a checklist, let Obsidian update its internal links so related runs stay associated. The results editor preserves notes you add outside the results section.
+
+Release Runs works with local Markdown and does not contact a server. It records results you enter and links to evidence you provide.
+
+## Verify changes
+
+From the repository root, run `node --check main.js` and `node --test` with Node.js 22 or later. The automated tests exercise the workflow with a simulated Obsidian API.
+
+For an in-app check, install the plugin in a test vault. Create three runs from one checklist in this order: production, staging, production. Save a different result with evidence in each run. From the most recent run, verify that the default command selects staging and the same-environment command selects the earlier production run. Confirm that the evidence link opens in Reading view.
+
+## Support
+
+Built by Atlas Creative. [Sponsor bzucker4 on GitHub](https://github.com/sponsors/bzucker4).
