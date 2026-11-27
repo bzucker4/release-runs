@@ -1,4 +1,4 @@
-const { Modal, Notice, Plugin, TFile, TFolder, parseYaml } = require("obsidian");
+const { FuzzySuggestModal, Modal, Notice, Plugin, TFile, TFolder, parseYaml } = require("obsidian");
 
 const RUNS_FOLDER = "Release Runs";
 const SCHEMA = "release-runs/v1";
@@ -140,15 +140,19 @@ function parseRun(markdown) {
   }
 }
 
-function updateResult(markdown, before, next) {
+function updateResults(markdown, edits) {
   const run = parseRun(markdown);
-  const item = run?.items.find(candidate => candidate.key === before.key);
-  if (!item || item.label !== before.label || item.status !== before.status || item.evidence !== before.evidence) {
-    throw new Error("This result changed while it was open. Reopen the editor and try again.");
-  }
+  if (!run) throw new Error("This note is no longer a readable Release Runs record.");
+  const items = new Map(run.items.map(item => [item.key, item]));
   const lines = markdown.split(/(\r?\n)/);
-  lines[(item.markerLine + 2) * 2] = `**Status:** ${next.status}`;
-  lines[(item.markerLine + 4) * 2] = next.evidence ? `**Evidence:** ${next.evidence}` : "**Evidence:**";
+  for (const { before, next } of edits) {
+    const item = items.get(before.key);
+    if (!item || item.label !== before.label || item.status !== before.status || item.evidence !== before.evidence) {
+      throw new Error(`“${before.label}” changed while it was open. Keep a copy of your edits, then reopen the editor.`);
+    }
+    lines[(item.markerLine + 2) * 2] = `**Status:** ${next.status}`;
+    lines[(item.markerLine + 4) * 2] = next.evidence ? `**Evidence:** ${next.evidence}` : "**Evidence:**";
+  }
   return lines.join("");
 }
 
@@ -244,6 +248,27 @@ class StartRunModal extends Modal {
   }
 }
 
+class EvidencePicker extends FuzzySuggestModal {
+  constructor(app, runFile, onPick) {
+    super(app);
+    this.runFile = runFile;
+    this.onPick = onPick;
+    this.setPlaceholder("Search for a vault file…");
+  }
+
+  getItems() {
+    return this.app.vault.getFiles().filter(file => file.path !== this.runFile.path);
+  }
+
+  getItemText(file) {
+    return file.path;
+  }
+
+  onChooseItem(file) {
+    this.onPick(this.app.fileManager.generateMarkdownLink(file, this.runFile.path));
+  }
+}
+
 class ResultsModal extends Modal {
   constructor(plugin, file, run) {
     super(plugin.app);
@@ -258,8 +283,45 @@ class ResultsModal extends Modal {
     const details = [this.run.environment, this.run.version].filter(Boolean).join(" · ");
     if (details) body.createEl("p", { text: details });
     const summary = body.createEl("p", { text: statusSummary(this.run.items), attr: { "aria-live": "polite" } });
-    const list = body.createDiv({ cls: "release-runs-results" });
+    const toolbarSection = body.createDiv({ cls: "release-runs-toolbar" });
+    const toolbar = toolbarSection.createDiv({ cls: "release-runs-actions" });
+    const pending = toolbar.createSpan({ attr: { "aria-live": "polite" } });
+    const error = modalError(toolbarSection);
+    const rows = [];
+    let saving = false;
 
+    const refresh = () => {
+      let count = 0;
+      for (const row of rows) {
+        const dirty = row.isDirty();
+        if (dirty) count++;
+        row.button.disabled = saving || !dirty;
+      }
+      saveAll.disabled = saving || count === 0;
+      pending.textContent = saving ? "Saving…" : count ? `${count} unsaved` : "All results saved";
+    };
+
+    const save = async selected => {
+      if (saving) return;
+      const edits = selected.filter(row => row.isDirty()).map(row => ({ before: row.item, next: row.draft() }));
+      if (!edits.length) return;
+      saving = true;
+      error.textContent = "";
+      refresh();
+      try {
+        await this.app.vault.process(this.file, content => updateResults(content, edits));
+        for (const { before, next } of edits) Object.assign(before, next);
+        summary.textContent = statusSummary(this.run.items);
+      } catch (issue) {
+        error.textContent = issue.message;
+      } finally {
+        saving = false;
+        refresh();
+      }
+    };
+
+    const saveAll = action(toolbar, "Save all results", () => save(rows), true);
+    const list = body.createDiv({ cls: "release-runs-results" });
     for (const item of this.run.items) {
       const form = list.createEl("form", { cls: "release-runs-item" });
       form.createEl("h4", { text: item.label });
@@ -271,30 +333,24 @@ class ResultsModal extends Modal {
       const evidence = field(form, "Evidence", {
         value: item.evidence, placeholder: "Screenshot link, URL, or short note"
       });
-      const error = modalError(form);
       const row = form.createDiv({ cls: "release-runs-actions" });
-      const saved = row.createSpan({ attr: { "aria-live": "polite" } });
+      action(row, "Link vault file", () => {
+        new EvidencePicker(this.app, this.file, link => {
+          evidence.value = [evidence.value.trim(), link].filter(Boolean).join(" ");
+          refresh();
+        }).open();
+      });
       const button = row.createEl("button", { text: "Save result", attr: { type: "submit" } });
-      form.addEventListener("input", () => { saved.textContent = ""; });
-      form.addEventListener("submit", async event => {
+      const draft = () => ({ status: status.value, evidence: evidence.value.trim() });
+      const result = { item, button, draft, isDirty: () => status.value !== item.status || evidence.value.trim() !== item.evidence };
+      rows.push(result);
+      form.addEventListener("input", refresh);
+      form.addEventListener("submit", event => {
         event.preventDefault();
-        if (button.disabled) return;
-        const next = { status: status.value, evidence: evidence.value.trim() };
-        error.textContent = "";
-        saved.textContent = "";
-        button.disabled = true;
-        try {
-          await this.app.vault.process(this.file, content => updateResult(content, item, next));
-          Object.assign(item, next);
-          summary.textContent = statusSummary(this.run.items);
-          if (status.value === next.status && evidence.value.trim() === next.evidence) saved.textContent = "Saved";
-        } catch (issue) {
-          error.textContent = issue.message;
-        } finally {
-          button.disabled = false;
-        }
+        return save([result]);
       });
     }
+    refresh();
   }
 }
 

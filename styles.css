@@ -54,6 +54,18 @@
   color: var(--text-error);
 }
 
+.release-runs-toolbar {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  padding-block: 0.4rem;
+  background: var(--modal-background);
+}
+
+.release-runs-toolbar .release-runs-actions {
+  margin-block-start: 0;
+}
+
 .release-runs-modal details {
   margin-block-start: 0.8rem;
 }

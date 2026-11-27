@@ -44,13 +44,17 @@ class Modal {
   open() { this.app.dialog = this; this.onOpen(); }
   close() { this.app.dialog = null; }
 }
+class FuzzySuggestModal extends Modal {
+  setPlaceholder() {}
+  open() { this.app.picker = this; }
+}
 class Plugin {
   constructor(app) { this.app = app; this.commands = {}; }
   addCommand(command) { this.commands[command.id] = command; }
   registerEvent() {}
 }
 const obsidian = {
-  Modal, Plugin, TFile, TFolder,
+  FuzzySuggestModal, Modal, Plugin, TFile, TFolder,
   Notice: class { constructor(message) { notices.push(message); } },
   parseYaml: text => Object.fromEntries(text.split("\n").filter(line => line.includes(": ")).map(line => {
     const split = line.indexOf(": ");
@@ -66,7 +70,7 @@ const sandbox = {
   require: id => id === "obsidian" ? obsidian : localRequire(id)
 };
 vm.runInNewContext(readFileSync(require("node:path").join(__dirname, "../main.js"), "utf8") +
-  "\nmodule.exports.test = { checklistItems, parseRun, runDocument, updateResult, compareRuns };", sandbox);
+  "\nmodule.exports.test = { checklistItems, parseRun, runDocument, updateResults, compareRuns };", sandbox);
 const ReleaseRuns = sandbox.module.exports;
 const model = ReleaseRuns.test;
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -86,6 +90,7 @@ function fixture() {
       getFileCache: () => undefined,
       getFirstLinkpathDest: link => files.get(link + ".md")
     },
+    fileManager: { generateMarkdownLink: file => `[[${file.path}]]` },
     vault: {
       getAbstractFileByPath: path => files.get(path),
       createFolder: async path => { files.set(path, new TFolder()); },
@@ -97,6 +102,7 @@ function fixture() {
       read: async file => file.text,
       cachedRead: async file => file.text,
       process: async (file, edit) => { file.text = edit(file.text); return file.text; },
+      getFiles: () => [...files.values()].filter(file => file instanceof TFile),
       getMarkdownFiles: () => [...files.values()].filter(file => file instanceof TFile)
     }
   };
@@ -127,11 +133,11 @@ test("updates one result without rewriting unrelated text or losing simultaneous
   };
   let note = model.runDocument(run).replaceAll("\n", "\r\n") + "\r\n## My notes\r\nKeep me.\r\n";
   const [first, second] = model.parseRun(note).items;
-  note = model.updateResult(note, first, { status: "Failed", evidence: "[[Screenshot.png]]" });
-  note = model.updateResult(note, second, { status: "Passed", evidence: "https://example.com/log" });
+  note = model.updateResults(note, [{ before: first, next: { status: "Failed", evidence: "[[Screenshot.png]]" } }]);
+  note = model.updateResults(note, [{ before: second, next: { status: "Passed", evidence: "https://example.com/log" } }]);
   assert.match(note, /\*\*Status:\*\* Failed\r\n\r\n\*\*Evidence:\*\* \[\[Screenshot\.png\]\]/);
   assert.match(note, /## My notes\r\nKeep me\.\r\n$/);
-  assert.throws(() => model.updateResult(note, first, { status: "Passed", evidence: "" }), /changed while/);
+  assert.throws(() => model.updateResults(note, [{ before: first, next: { status: "Passed", evidence: "" } }]), /changed while/);
   assert.equal(model.parseRun(note).items[1].status, "Passed");
 });
 
@@ -157,7 +163,7 @@ test("runs the command, save, reload and previous-run comparison workflow", asyn
 
   const first = app.workspace.getActiveFile();
   const old = model.parseRun(first.text).created;
-  first.text = first.text.replace(old, "2026-11-26T12:00:00.000Z");
+  first.text = first.text.replace(old, new Date(Date.parse(old) - 1000).toISOString());
   const firstResult = app.dialog.contentEl.find(el => el.tag === "form");
   firstResult.find(el => el.tag === "select").value = "Passed";
   firstResult.find(el => el.tag === "input").value = "[[Screenshots/Login.png]]";
@@ -217,4 +223,60 @@ test("compares to the previous run in the same environment when requested", asyn
 
   assert.equal(app.dialog.title, "Compare runs in the same environment");
   assert.equal(app.dialog.file, runs[0]);
+});
+
+test("adds a vault attachment to evidence and saves two drafts in a single write", async () => {
+  const { app, plugin, source, files } = fixture();
+  const screenshot = new TFile("Screenshots/Login result.png", "");
+  screenshot.extension = "png";
+  files.set(screenshot.path, screenshot);
+  plugin.commands["start-run"].editorCallback({ getValue: () => source.text }, { file: source });
+  await tick();
+  await app.dialog.contentEl.find(el => el.tag === "form").emit("submit");
+  const file = app.workspace.getActiveFile();
+  const modal = app.dialog.contentEl;
+  const list = modal.find(el => el.children.filter(child => child.tag === "form").length === 2);
+  const [first, second] = list.children;
+  first.find(el => el.tag === "select").value = "Passed";
+  first.find(el => el.tag === "input").value = "Verified sign-in.";
+  await first.find(el => el.textContent === "Link vault file").emit("click");
+  assert.ok(app.picker.getItems().includes(screenshot));
+  assert.ok(!app.picker.getItems().includes(file));
+  assert.equal(app.picker.getItemText(screenshot), screenshot.path);
+  app.picker.onChooseItem(screenshot);
+  second.find(el => el.tag === "select").value = "Blocked";
+  await second.emit("input");
+  assert.ok(modal.find(el => el.textContent === "2 unsaved"));
+  let writes = 0;
+  const process = app.vault.process;
+  app.vault.process = async (...args) => { writes++; return process(...args); };
+  await modal.find(el => el.textContent === "Save all results").emit("click");
+  assert.equal(writes, 1);
+  const run = await plugin.readRun(file);
+  assert.equal(run.items[0].status, "Passed");
+  assert.equal(run.items[0].evidence, "Verified sign-in. [[Screenshots/Login result.png]]");
+  assert.equal(run.items[1].status, "Blocked");
+  assert.ok(modal.find(el => el.textContent === "All results saved"));
+});
+
+test("a conflicting batch leaves the file and both drafts intact", async () => {
+  const { app, plugin, source } = fixture();
+  plugin.commands["start-run"].editorCallback({ getValue: () => source.text }, { file: source });
+  await tick();
+  await app.dialog.contentEl.find(el => el.tag === "form").emit("submit");
+  const file = app.workspace.getActiveFile();
+  const modal = app.dialog.contentEl;
+  const list = modal.find(el => el.children.filter(child => child.tag === "form").length === 2);
+  const [first, second] = list.children;
+  const before = (await plugin.readRun(file)).items[1];
+  const external = model.updateResults(file.text, [{ before, next: { status: "Passed", evidence: "External edit" } }]);
+  file.text = external;
+  first.find(el => el.tag === "select").value = "Passed";
+  second.find(el => el.tag === "select").value = "Failed";
+  await second.emit("input");
+  await modal.find(el => el.textContent === "Save all results").emit("click");
+  assert.equal(file.text, external);
+  assert.equal(second.find(el => el.tag === "select").value, "Failed");
+  assert.ok(modal.find(el => /Export.*changed while/.test(el.textContent)));
+  assert.ok(modal.find(el => el.textContent === "2 unsaved"));
 });
